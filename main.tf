@@ -13,10 +13,6 @@ data "aws_ami" "app_ami" {
 
   owners = ["979382823631"] # Bitnami
 }
-# Using module instead of data source to create VPC, as the security group module needs a VPC ID to create the security group, and we cannot use the default VPC for that.
-# data "aws_vpc" "default" {
-#   default = true
-# }
 
 module "blog_vpc" {
   source = "terraform-aws-modules/vpc/aws"
@@ -29,24 +25,19 @@ module "blog_vpc" {
   public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 
   enable_nat_gateway = false
-  # enable_vpn_gateway = true
 
   tags = {
-    Terraform = "true"
+    Terraform   = "true"
     Environment = "dev"
   }
 }
 
-
 module "blog_sg" {
   source  = "terraform-aws-modules/security-group/aws"
   version = "5.3.1"
-  name= "blog"
+  name    = "blog"
 
-  # not using data but module
-  # vpc_id        = data.aws_vpc.default.id
-  vpc_id        = module.blog_vpc.vpc_id
-
+  vpc_id = module.blog_vpc.vpc_id
 
   ingress_rules       = ["http-80-tcp", "https-443-tcp"]
   ingress_cidr_blocks = ["0.0.0.0/0"]
@@ -64,78 +55,50 @@ module "blog_alb" {
 
   security_groups = [module.blog_sg.security_group_id]
 
-  # access_logs = {
-  #   bucket = "my-alb-logs"
-  # }
+  target_groups = {
+    blog = {
+      name              = "blog"
+      port              = 80
+      protocol          = "HTTP"
+      target_type       = "instance"
+      vpc_id            = module.blog_vpc.vpc_id
+      create_attachment = false
+    }
+  }
 
   listeners = {
     blog-http = {
       port     = 80
       protocol = "HTTP"
       forward = {
-        target_group_arn = "aws_lb_target_group.blog.arn"
+        target_group_key = "blog"
       }
-      # redirect = {
-      #   port        = "443"
-      #   protocol    = "HTTPS"
-      #   status_code = "HTTP_301"
-      # }
     }
   }
-
 
   tags = {
     Environment = "Development"
   }
 }
 
-resource "aws_lb_target_group" "blog" {
-  name     = "blog"
-  port     = 80
-  protocol = "HTTP"
-  vpc_id   = module.blog_vpc.vpc_id
-}
-
-# resource "aws_lb_target_group_attachment" "blog" {
-#   target_group_arn = aws_lb_target_group.blog.arn
-#   target_id        = aws_instance.blog.id
-#   port             = 80
-# }
-
 module "blog_autoscaling" {
   source  = "terraform-aws-modules/autoscaling/aws"
   version = "9.2.0"
-  name = "blog"
+  name    = "blog"
 
   min_size = 1
   max_size = 1
 
   vpc_zone_identifier = module.blog_vpc.public_subnets
 
-  # launch_template = "blog"
   security_groups = [module.blog_sg.security_group_id]
-  instance_type = var.instance_type
-  image_id = data.aws_ami.app_ami.id
+  instance_type   = var.instance_type
+  image_id        = data.aws_ami.app_ami.id
 
   traffic_source_attachments = {
     blog-alb = {
-      tarffice_source_identifier = aws_lb_target_group.blog.arn
+      traffic_source_identifier = module.blog_alb.target_groups["blog"].arn
+      traffic_source_type       = "elbv2"
     }
-  }
-
-}
-
-resource "aws_instance" "blog" {
-  # ami           = data.aws_ami.app_ami.id
-  # instance_type = var.instance_type
-
-  # vpc_security_group_ids = [aws_security_group.blog.id]
-  #using module blog_autoscaling to create security group and launch template, so we can use the security group from the module instead of creating a separate security group for the instance.
-  # vpc_security_group_ids = [module.blog_sg.security_group_id]
-
-  subnet_id = module.blog_vpc.public_subnets[0]
-
-  tags = {
-    Name = "Learning Terraform Blog"
   }
 }
